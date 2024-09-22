@@ -12,6 +12,7 @@ import multiprocessing
 import hashlib
 import cairosvg
 import graphviz
+import pathlib
 from os.path import exists
 from urllib import parse
 
@@ -284,8 +285,10 @@ class ChessGraph:
                 label = board.unicode(empty_square="\u00B7")
             elif self.boardstyle == "svg":
                 filename = (
-                    "node-" + hashlib.sha256(epd.encode("utf-8")).hexdigest() + ".svg"
+                    "nodes/node-" + hashlib.sha256(epd.encode("utf-8")).hexdigest() + ".svg"
                 )
+                pathlib.Path('nodes').mkdir(exist_ok=True)
+
                 if not exists(filename):
                     cairosvg.svg2svg(
                         bytestring=chess.svg.board(board, size="200px").encode("utf-8"),

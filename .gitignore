@@ -1,4 +1,5 @@
-node-*.svg
+nodes/node-*.svg
 chess.dot
 chess.svg
 chess.png
+chessgraph.cache.pyc
