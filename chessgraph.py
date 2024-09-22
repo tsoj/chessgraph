@@ -285,9 +285,9 @@ class ChessGraph:
                 label = board.unicode(empty_square="\u00B7")
             elif self.boardstyle == "svg":
                 filename = (
-                    "nodes/node-" + hashlib.sha256(epd.encode("utf-8")).hexdigest() + ".svg"
+                    "svg_nodes/node-" + hashlib.sha256(epd.encode("utf-8")).hexdigest() + ".svg"
                 )
-                pathlib.Path('nodes').mkdir(exist_ok=True)
+                pathlib.Path('svg_nodes').mkdir(exist_ok=True)
 
                 if not exists(filename):
                     cairosvg.svg2svg(
@@ -454,11 +454,15 @@ class ChessGraph:
 
         if ralpha is not None:
             alpha = int(ralpha * score)
+            if alpha > score:
+                alpha = int(score / ralpha)
         elif salpha is not None:
             alpha = score - salpha
 
         if rbeta is not None:
             beta = int(rbeta * score)
+            if beta < score:
+                beta = int(score / rbeta)
         elif sbeta is not None:
             beta = score + sbeta
 
