@@ -5,6 +5,7 @@ import argparse
 import chess
 import chess.engine
 import chess.svg
+import chess.pgn
 import math
 import sys
 import concurrent.futures
@@ -16,6 +17,11 @@ import pathlib
 from os.path import exists
 from urllib import parse
 
+def count_nodes_in_variation(node):
+    count = 1  # Count the current node
+    for variation in node.variations:
+        count += count_nodes_in_variation(variation)
+    return count
 
 class ChessGraph:
     def __init__(
@@ -48,10 +54,9 @@ class ChessGraph:
         self.executorwork = concurrent.futures.ThreadPoolExecutor(
             max_workers=concurrency
         )
-        self.visited = set()
         self.session = requests.Session()
-        self.graph = graphviz.Digraph("ChessGraph", format="svg")
         self.cache = {}
+        self.clear_graph()
 
         # We fix lichessbeta by giving the startpos a score of 0.35
         if self.source == "lichess":
@@ -61,6 +66,10 @@ class ChessGraph:
             self.lichessbeta = (1 - 0.35) / math.log((w + d + l) / w - 1)
         else:
             self.lichessbeta = None
+
+    def clear_graph(self):
+        self.visited = set()
+        self.graph = graphviz.Digraph("ChessGraph", format="svg")
 
     def load_cache(self):
         try:
@@ -352,7 +361,10 @@ class ChessGraph:
             style=style,
         )
 
-    def recurse(self, board, depth, alpha, beta, pvNode, plyFromRoot):
+    def recurse(self, variantions, depth, alpha, beta, pvNode, plyFromRoot):
+
+        board = variantions.board().copy()
+
         nodenamefrom = self.node_name(board)
 
         # terminate recursion if visited
@@ -379,8 +391,9 @@ class ChessGraph:
             ucimove = m["uci"]
             move = chess.Move.from_uci(ucimove)
             sanmove = board.san(move)
-            board.push(move)
-            nodenameto = self.node_name(board)
+            new_variation = variantions.add_variation(move)
+            new_variation.comment = "Score: " + str(m["score"] / 100) + " cp"
+            nodenameto = self.node_name(new_variation.board())
             edgesfound += 1
             pvEdge = pvNode and score == bestscore
             lateEdge = score != bestscore
@@ -396,7 +409,7 @@ class ChessGraph:
                     futures.append(
                         self.executorgraph[depth].submit(
                             self.recurse,
-                            board.copy(),
+                            new_variation,
                             newDepth,
                             -beta,
                             -alpha,
@@ -418,8 +431,6 @@ class ChessGraph:
                     pvEdge,
                     lateEdge,
                 )
-
-            board.pop()
 
         concurrent.futures.wait(futures)
 
@@ -445,7 +456,7 @@ class ChessGraph:
             tooltip,
         )
 
-    def generate_graph(self, epd, alpha, beta, ralpha, rbeta, salpha, sbeta):
+    def generate_graph(self, epd, alpha, beta, ralpha, rbeta, salpha, sbeta, approx_num_nodes):
         # set initial board
         board = chess.Board(epd)
 
@@ -466,24 +477,45 @@ class ChessGraph:
         elif sbeta is not None:
             beta = score + sbeta
 
-        print("root position epd : ", epd)
-        print(
-            f"alpha             :  {alpha}{'  (alpha > eval!)' if alpha > score else ''}"
-        )
-        print("eval              : ", score)
-        print(
-            f"beta              :  {beta}{'  (beta < eval!)' if beta < score else ''}"
-        )
-        print("depth             : ", self.depth)
+        if approx_num_nodes is not None:
+            beta = score + 1
+            alpha = score - 1
 
-        if board.turn == chess.WHITE:
-            initialAlpha, initialBeta = alpha, beta
-        else:
-            initialAlpha, initialBeta = -beta, -alpha
 
-        self.recurse(
-            board, self.depth, initialAlpha, initialBeta, pvNode=True, plyFromRoot=0
-        )
+        while True:
+
+            print("root position epd : ", epd)
+            print(
+                f"alpha             :  {alpha}{'  (alpha > eval!)' if alpha > score else ''}"
+            )
+            print("eval              : ", score)
+            print(
+                f"beta              :  {beta}{'  (beta < eval!)' if beta < score else ''}"
+            )
+            print("depth             : ", self.depth)
+
+
+            if board.turn == chess.WHITE:
+                initialAlpha, initialBeta = alpha, beta
+            else:
+                initialAlpha, initialBeta = -beta, -alpha
+
+            variantions = chess.pgn.Game()
+            variantions.setup(board.copy())
+            variantions.headers = chess.pgn.Headers({"FEN": board.fen()})
+
+            self.recurse(
+                variantions, self.depth, initialAlpha, initialBeta, pvNode=True, plyFromRoot=0
+            )
+            print(variantions)
+            print("nodes:", count_nodes_in_variation(variantions))
+
+            if approx_num_nodes is None or count_nodes_in_variation(variantions) >= approx_num_nodes:
+                break
+
+            alpha -= int(abs(alpha) * 0.1) + 1
+            beta += int(abs(beta) * 0.1) + 1
+            self.clear_graph()
 
 
 if __name__ == "__main__":
@@ -508,7 +540,6 @@ if __name__ == "__main__":
     groupa.add_argument(
         "--alpha",
         type=int,
-        default=0,
         help="Lower bound on the score of variations to be followed (for white).",
     )
     groupa.add_argument(
@@ -526,7 +557,6 @@ if __name__ == "__main__":
     groupb.add_argument(
         "--beta",
         type=int,
-        default=15,
         help="Lower bound on the score of variations to be followed (for black).",
     )
     groupb.add_argument(
@@ -538,6 +568,12 @@ if __name__ == "__main__":
         "--sbeta",
         type=int,
         help="Set BETA = EVAL + SBETA.",
+    )
+
+    parser.add_argument(
+        "--approxnodes",
+        type=int,
+        help="The approximately target number of nodes.",
     )
 
     parser.add_argument(
@@ -640,6 +676,15 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    auto_alpha_beta = args.alpha is None and args.beta is None and args.ralpha is None and args.rbeta is None and args.salpha is None and args.sbeta is None
+
+    assert args.approxnodes is None or auto_alpha_beta, "argument --approxnodes: not allowed with any of: --alpha --beta --ralpha --rbeta --salpha --sbeta"
+
+    if auto_alpha_beta and args.approxnodes is None:
+        args.approxnodes = 50
+        print("Setting --approxnodes to default:", args.approxnodes)
+
+
     chessgraph = ChessGraph(
         networkstyle=args.networkstyle,
         depth=args.depth,
@@ -670,7 +715,7 @@ if __name__ == "__main__":
 
     # generate the content of the dotfile
     chessgraph.generate_graph(
-        fen, args.alpha, args.beta, args.ralpha, args.rbeta, args.salpha, args.sbeta
+        fen, args.alpha, args.beta, args.ralpha, args.rbeta, args.salpha, args.sbeta, args.approxnodes
     )
 
     # store updated cache
